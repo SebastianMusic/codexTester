@@ -1,7 +1,29 @@
 #!/bin/bash
 
-# Define where your questions are
-QUESTIONS_DIR="q/discrete"
+# --- SETTINGS ---
+
+BASE_DIR="$HOME/anki/q"  # Or wherever your main questions folder is
+
+mkdir -p "$BASE_DIR"
+
+# --- CHOOSE DIRECTORY ---
+
+selection=$(
+    (find "$BASE_DIR" -mindepth 1 -maxdepth 1 -type d | sed "s|$BASE_DIR/||" || true) \
+    | fzf --prompt="Select a directory to test from: " --print-query --bind "enter:accept"
+)
+
+query=$(echo "$selection" | sed -n '1p')
+picked=$(echo "$selection" | sed -n '2p')
+
+dir_choice="${picked:-$query}"
+
+if [[ -z "$dir_choice" ]]; then
+    echo "Error: No directory selected or typed. Exiting."
+    exit 1
+fi
+
+QUESTIONS_DIR="$BASE_DIR/$dir_choice"
 
 # Print what we interpreted the directory as
 echo "Using questions directory: '$QUESTIONS_DIR'"
@@ -11,6 +33,8 @@ if [ ! -d "$QUESTIONS_DIR" ]; then
     echo "Error: Directory '$QUESTIONS_DIR' does not exist."
     exit 1
 fi
+
+# --- START TESTING ---
 
 # Generate list of files from the directory
 find "$QUESTIONS_DIR" -type f > filelist.txt
