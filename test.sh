@@ -112,8 +112,15 @@ while true; do
         continue
     fi
 
-    # Combine system prompt + user answer
-    input="${prefix}\n\n${user_input}"
+absolute_path="$filepath"
+
+augmented_user_input="[Question absolute path: $absolute_path]
+
+$user_input"
+
+input="$prefix
+
+$augmented_user_input"
 
     # Send to codex
     codex -m gpt-4.1 "$input" || {

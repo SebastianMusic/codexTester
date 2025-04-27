@@ -54,7 +54,6 @@ mkdir -p "$chosen_dir"
 # --- GET TOPIC ---
 
 TMP_TOPIC=$(mktemp)
-echo "Write your topic. Save and quit when done." > "$TMP_TOPIC"
 $DEFAULT_EDITOR "$TMP_TOPIC"
 topic=$(xargs < "$TMP_TOPIC")
 
@@ -66,7 +65,6 @@ fi
 # --- GET FILENAME ---
 
 TMP_FILENAME=$(mktemp)
-echo "Write the filename (without extension). Save and quit when done." > "$TMP_FILENAME"
 $DEFAULT_EDITOR "$TMP_FILENAME"
 filename=$(xargs < "$TMP_FILENAME")
 
