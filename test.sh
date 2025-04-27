@@ -1,9 +1,7 @@
 #!/bin/bash
 
 # --- SETTINGS ---
-
-BASE_DIR="$HOME/anki/q"  # Or wherever your main questions folder is
-
+BASE_DIR="$HOME/anki/q"
 mkdir -p "$BASE_DIR"
 
 # --- CHOOSE DIRECTORY ---
@@ -12,6 +10,12 @@ selection=$(
     (find "$BASE_DIR" -mindepth 1 -maxdepth 1 -type d | sed "s|$BASE_DIR/||" || true) \
     | fzf --prompt="Select a directory to test from: " --print-query --bind "enter:accept"
 )
+
+# Immediately check if fzf was cancelled
+if [[ $? -ne 0 ]]; then
+    echo "fzf was cancelled. Exiting script."
+    exit 1
+fi
 
 query=$(echo "$selection" | sed -n '1p')
 picked=$(echo "$selection" | sed -n '2p')
@@ -33,7 +37,6 @@ if [ ! -d "$QUESTIONS_DIR" ]; then
     echo "Error: Directory '$QUESTIONS_DIR' does not exist."
     exit 1
 fi
-
 # --- START TESTING ---
 
 # Generate list of files from the directory
