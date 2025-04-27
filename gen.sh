@@ -1,30 +1,47 @@
 #!/bin/bash
 
+set -euo pipefail
+
 # --- SETTINGS ---
 
-BASE_DIR="$HOME/anki/q"  # or relative like ./questions if you want
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+BASE_DIR="$SCRIPT_DIR/q"
+DEFAULT_EDITOR="nvim"
+CODING_MODEL="gpt-4.1"
+
 mkdir -p "$BASE_DIR"
 
+# --- CLEANUP HANDLER ---
+
+TMP_TOPIC=""
+TMP_FILENAME=""
+TMP_PROMPT=""
+TMP_CODEX=""
+
+cleanup() {
+    [[ -n "$TMP_TOPIC" && -f "$TMP_TOPIC" ]] && rm -f "$TMP_TOPIC"
+    [[ -n "$TMP_FILENAME" && -f "$TMP_FILENAME" ]] && rm -f "$TMP_FILENAME"
+    [[ -n "$TMP_PROMPT" && -f "$TMP_PROMPT" ]] && rm -f "$TMP_PROMPT"
+    [[ -n "$TMP_CODEX" && -f "$TMP_CODEX" ]] && rm -f "$TMP_CODEX"
+}
+trap cleanup EXIT
 
 # --- CHOOSE DIRECTORY ---
 
-# Always allow typing even if no results
 selection=$(
     (find "$BASE_DIR" -mindepth 1 -maxdepth 1 -type d | sed "s|$BASE_DIR/||" || true) \
-    | fzf --prompt="Select or type new directory: " --print-query
+    | fzf --prompt="Select or type new directory: " --print-query --bind "enter:accept"
 )
 
-query=$(echo "$selection" | sed -n '1p')      # first line = what you typed
-picked=$(echo "$selection" | sed -n '2p')     # second line = what you selected (if any)
-
-# Decide which one to use
-if [[ -n "$picked" ]]; then
-    # If user selected an existing directory
-    dir_choice="$picked"
-else
-    # If user typed something
-    dir_choice="$query"
+if [[ $? -ne 0 ]]; then
+    echo "fzf was cancelled. Exiting script."
+    exit 1
 fi
+
+query=$(sed -n '1p' <<< "$selection")
+picked=$(sed -n '2p' <<< "$selection")
+dir_choice="${picked:-$query}"
 
 if [[ -z "$dir_choice" ]]; then
     echo "Error: No directory selected or typed. Exiting."
@@ -32,19 +49,14 @@ if [[ -z "$dir_choice" ]]; then
 fi
 
 chosen_dir="$BASE_DIR/$dir_choice"
-
-# Create the directory if needed
 mkdir -p "$chosen_dir"
-
 
 # --- GET TOPIC ---
 
-tmp_topic=$(mktemp)
-echo "Write your topic. Save and quit when done."
-nvim "$tmp_topic"
-
-topic=$(cat "$tmp_topic" | xargs)
-rm "$tmp_topic"
+TMP_TOPIC=$(mktemp)
+echo "Write your topic. Save and quit when done." > "$TMP_TOPIC"
+$DEFAULT_EDITOR "$TMP_TOPIC"
+topic=$(xargs < "$TMP_TOPIC")
 
 if [[ -z "$topic" ]]; then
     echo "Error: topic was empty after trimming. Exiting."
@@ -53,24 +65,22 @@ fi
 
 # --- GET FILENAME ---
 
-tmp_filename=$(mktemp)
-echo "Write the filename (without extension). Save and quit when done."
-nvim "$tmp_filename"
-
-filename=$(cat "$tmp_filename" | xargs)
-rm "$tmp_filename"
+TMP_FILENAME=$(mktemp)
+echo "Write the filename (without extension). Save and quit when done." > "$TMP_FILENAME"
+$DEFAULT_EDITOR "$TMP_FILENAME"
+filename=$(xargs < "$TMP_FILENAME")
 
 if [[ -z "$filename" ]]; then
     echo "Error: filename was empty after trimming. Exiting."
     exit 1
 fi
 
-# --- GENERATE AND SAVE IN BACKGROUND ---
+# --- GENERATE PROMPT ---
 
 (
-    tmp_prompt=$(mktemp)
+    TMP_PROMPT=$(mktemp)
 
-    cat <<EOF > "$tmp_prompt"
+    cat <<EOF > "$TMP_PROMPT"
 You are tasked with creating study questions for active recall learning.
 
 Every output must strictly follow this format:
@@ -99,23 +109,29 @@ Now create a question about the following topic:
 $topic
 EOF
 
-    full_prompt=$(cat "$tmp_prompt")
-    rm "$tmp_prompt"
+    full_prompt=$(<"$TMP_PROMPT")
 
-    tmp_codex=$(mktemp)
-    codex -q "$full_prompt" > "$tmp_codex"
+    TMP_CODEX=$(mktemp)
 
-    response=$(<"$tmp_codex")
-    rm "$tmp_codex"
+    codex -q "$full_prompt" > "$TMP_CODEX" || {
+        echo "Error: Codex failed to respond. Exiting."
+        rm -f "$TMP_CODEX"
+        exit 1
+    }
 
+    response=$(<"$TMP_CODEX")
+
+    # Cut out anything after "###### Answer below ######"
     generated_content=$(echo "$response" | jq -r '.content[] | select(.type=="output_text") | .text' 2>/dev/null | awk '
-        BEGIN { found=0 }
-        /^###### Answer below ######/ { found=1; print; exit }
+        /^###### Answer below ######/ { exit }
         { print }
     ')
 
     if [[ -n "$generated_content" ]]; then
         echo "$generated_content" > "${chosen_dir}/${filename}.md"
+        echo "Saved to '${chosen_dir}/${filename}.md'"
+    else
+        echo "Error: Generated content was empty."
     fi
 ) > /dev/null 2>&1 &
 

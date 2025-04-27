@@ -1,8 +1,32 @@
 #!/bin/bash
 
+set -euo pipefail
+
 # --- SETTINGS ---
-BASE_DIR="$HOME/anki/q"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+BASE_DIR="$SCRIPT_DIR/q"
+PREFIX_FILE="$SCRIPT_DIR/prefix.md"
+FILELIST="$SCRIPT_DIR/filelist.txt"
+
 mkdir -p "$BASE_DIR"
+
+# --- CLEANUP HANDLER ---
+
+cleanup() {
+    [[ -f "$FILELIST" ]] && rm -f "$FILELIST"
+}
+trap cleanup EXIT
+
+# --- LOAD PREFIX ---
+
+if [[ ! -f "$PREFIX_FILE" ]]; then
+    echo "Error: System prompt '$PREFIX_FILE' not found. Exiting."
+    exit 1
+fi
+
+prefix=$(<"$PREFIX_FILE")
 
 # --- CHOOSE DIRECTORY ---
 
@@ -11,7 +35,6 @@ selection=$(
     | fzf --prompt="Select a directory to test from: " --print-query --bind "enter:accept"
 )
 
-# Immediately check if fzf was cancelled
 if [[ $? -ne 0 ]]; then
     echo "fzf was cancelled. Exiting script."
     exit 1
@@ -19,7 +42,6 @@ fi
 
 query=$(echo "$selection" | sed -n '1p')
 picked=$(echo "$selection" | sed -n '2p')
-
 dir_choice="${picked:-$query}"
 
 if [[ -z "$dir_choice" ]]; then
@@ -29,51 +51,74 @@ fi
 
 QUESTIONS_DIR="$BASE_DIR/$dir_choice"
 
-# Print what we interpreted the directory as
 echo "Using questions directory: '$QUESTIONS_DIR'"
 
-# Check if the directory actually exists
-if [ ! -d "$QUESTIONS_DIR" ]; then
+if [[ ! -d "$QUESTIONS_DIR" ]]; then
     echo "Error: Directory '$QUESTIONS_DIR' does not exist."
     exit 1
 fi
+
 # --- START TESTING ---
 
-# Generate list of files from the directory
-find "$QUESTIONS_DIR" -type f > filelist.txt
+find "$QUESTIONS_DIR" -type f > "$FILELIST"
 
-length=1
-prefix=$(cat prefix.md)
+if [[ ! -s "$FILELIST" ]]; then
+    echo "Error: No questions found in '$QUESTIONS_DIR'."
+    exit 1
+fi
 
-while (( length > 0 )); do
-    length=$(wc -l < filelist.txt)
-    
+while true; do
+    length=$(wc -l < "$FILELIST")
+
     if (( length == 0 )); then
+        echo "All questions completed!"
         break
     fi
 
-    # Pick random file path
-    line=$(shuf -i 1-${length} -n 1)
-    filepath=$(sed -n "${line}p" filelist.txt | xargs)
+    line=$(shuf -i 1-"$length" -n 1)
+    filepath=$(sed -n "${line}p" "$FILELIST" | xargs)
 
-    # Read entire content of the selected file
-    question_content=$(<"$filepath")
+    if [[ ! -f "$filepath" ]]; then
+        echo "Warning: file '$filepath' not found. Skipping."
+        sed -i "${line}d" "$FILELIST"
+        continue
+    fi
 
-    # Prepare temp file
+    question_content=$(awk '/^###### Important points to remember ######/ {exit} {print}' "$filepath")
+
+    if [[ -z "$question_content" ]]; then
+        echo "Warning: file '$filepath' had no valid question part. Skipping."
+        sed -i "${line}d" "$FILELIST"
+        continue
+    fi
+
     tmpfile=$(mktemp)
     echo -e "${question_content}\n\n###### answer below #####\n" > "$tmpfile"
 
     echo "Please write your answer. Save and quit when done."
-    nvim "$tmpfile"
+    nvim "$tmpfile" || {
+        echo "Warning: Neovim exited abnormally. Skipping question."
+        rm -f "$tmpfile"
+        sed -i "${line}d" "$FILELIST"
+        continue
+    }
 
     user_input=$(<"$tmpfile")
-    rm "$tmpfile"
+    rm -f "$tmpfile"
 
-    # Combine prefix + user input (which includes question and answer)
-    input="${prefix}${user_input}"
+    if [[ -z "$user_input" ]]; then
+        echo "Warning: Empty answer. Skipping."
+        sed -i "${line}d" "$FILELIST"
+        continue
+    fi
 
-    codex -m gpt-4.1 "$input"
+    # Combine system prompt + user answer
+    input="${prefix}\n\n${user_input}"
 
-    # Remove the used file path from filelist.txt
-    sed -i "${line}d" filelist.txt
+    # Send to codex
+    codex -m gpt-4.1 "$input" || {
+        echo "Warning: Codex request failed. Continuing."
+    }
+
+    sed -i "${line}d" "$FILELIST"
 done

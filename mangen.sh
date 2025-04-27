@@ -1,9 +1,26 @@
 #!/bin/bash
 
+set -euo pipefail
+
 # --- SETTINGS ---
 
-BASE_DIR="$HOME/anki/q"  # or relative like ./questions if you want
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+BASE_DIR="$SCRIPT_DIR/q"
+DEFAULT_EDITOR="nvim"
+
 mkdir -p "$BASE_DIR"
+
+# --- CLEANUP HANDLER ---
+
+TMP_QUESTION=""
+TMP_FILENAME=""
+
+cleanup() {
+    [[ -n "$TMP_QUESTION" && -f "$TMP_QUESTION" ]] && rm -f "$TMP_QUESTION"
+    [[ -n "$TMP_FILENAME" && -f "$TMP_FILENAME" ]] && rm -f "$TMP_FILENAME"
+}
+trap cleanup EXIT
 
 # --- CHOOSE DIRECTORY ---
 
@@ -12,15 +29,13 @@ selection=$(
     | fzf --prompt="Select or type new directory: " --print-query --bind "enter:accept"
 )
 
-# Immediately check if fzf was cancelled
 if [[ $? -ne 0 ]]; then
-    echo "fzf was cancelled. Exiting."
+    echo "fzf was cancelled. Exiting script."
     exit 1
 fi
 
-query=$(echo "$selection" | sed -n '1p')
-picked=$(echo "$selection" | sed -n '2p')
-
+query=$(sed -n '1p' <<< "$selection")
+picked=$(sed -n '2p' <<< "$selection")
 dir_choice="${picked:-$query}"
 
 if [[ -z "$dir_choice" ]]; then
@@ -33,49 +48,57 @@ mkdir -p "$chosen_dir"
 
 # --- MANUAL QUESTION CREATION ---
 
-tmp_question=$(mktemp)
+TMP_QUESTION=$(mktemp)
 
-# Prefill with the standard template
-cat <<EOF > "$tmp_question"
+cat <<EOF > "$TMP_QUESTION"
 ###### Question ######
 
 ###### Important points to remember ######
 
-###### Answer below ######
 EOF
 
-# Open Neovim for editing the question manually
 echo "Write your question manually. Save and quit when done."
-nvim "$tmp_question"
+$DEFAULT_EDITOR "$TMP_QUESTION" || {
+    echo "Error: Editor exited abnormally. Exiting."
+    exit 1
+}
 
-# Read your manually written question
-question_content=$(cat "$tmp_question")
-rm "$tmp_question"
+question_content=$(<"$TMP_QUESTION")
 
 if [[ -z "$question_content" ]]; then
-    echo "Error: Question content was empty. Exiting."
+    echo "Error: Question content was empty after editing. Exiting."
     exit 1
 fi
 
 # --- GET FILENAME ---
 
-tmp_filename=$(mktemp)
-echo "Write the filename (without extension). Save and quit when done."
-nvim "$tmp_filename"
+TMP_FILENAME=$(mktemp)
+echo "Write the filename (without extension). Save and quit when done." > "$TMP_FILENAME"
+$DEFAULT_EDITOR "$TMP_FILENAME" || {
+    echo "Error: Editor exited abnormally. Exiting."
+    exit 1
+}
 
-filename=$(cat "$tmp_filename" | xargs)
-rm "$tmp_filename"
+filename=$(xargs < "$TMP_FILENAME")
 
 if [[ -z "$filename" ]]; then
-    echo "Error: filename was empty after trimming. Exiting."
+    echo "Error: Filename was empty after trimming. Exiting."
     exit 1
 fi
 
-# --- SAVE MANUALLY WRITTEN QUESTION ---
+# --- SAVE QUESTION ---
 
-# Save the manual question directly
-echo "$question_content" > "${chosen_dir}/${filename}.md"
+output_file="${chosen_dir}/${filename}.md"
 
-echo "Saved manual question to '${chosen_dir}/${filename}.md'"
+# Check if file already exists
+if [[ -f "$output_file" ]]; then
+    echo "Warning: File '$output_file' already exists. Overwrite? (y/N)"
+    read -r answer
+    if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+        echo "Cancelled saving. Exiting."
+        exit 1
+    fi
+fi
 
-
+echo "$question_content" > "$output_file"
+echo "Saved manual question to '${output_file}'"
