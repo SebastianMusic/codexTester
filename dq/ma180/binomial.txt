@@ -1,0 +1,1 @@
+Generate a discrete mathematics exercise on the binomial theorem where n is between 5 and 10 and the task is to find the coefficient of x^k with k between 2 and n.
