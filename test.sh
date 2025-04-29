@@ -1,131 +1,162 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# test.sh – run study sessions
+#
+#   default : static questions (./q)
+#   dq      : dynamic meta-prompts (./dq)
+#   -m      : manually pick one file
+# ---------------------------------------------------------------------------
 
 set -euo pipefail
 
-# --- SETTINGS ---
+##############################################################################
+# 0.  FLAGS
+##############################################################################
+TYPE="static"        # static | dynamic
+MANUAL=false
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-BASE_DIR="$SCRIPT_DIR/q"
-PREFIX_FILE="$SCRIPT_DIR/prefix.md"
-FILELIST="$SCRIPT_DIR/filelist.txt"
-
-mkdir -p "$BASE_DIR"
-
-# --- CLEANUP HANDLER ---
-
-cleanup() {
-    [[ -f "$FILELIST" ]] && rm -f "$FILELIST"
-}
-trap cleanup EXIT
-
-# --- LOAD PREFIX ---
-
-if [[ ! -f "$PREFIX_FILE" ]]; then
-    echo "Error: System prompt '$PREFIX_FILE' not found. Exiting."
-    exit 1
-fi
-
-prefix=$(<"$PREFIX_FILE")
-
-# --- CHOOSE DIRECTORY ---
-
-selection=$(
-    (find "$BASE_DIR" -mindepth 1 -maxdepth 1 -type d | sed "s|$BASE_DIR/||" || true) \
-    | fzf --prompt="Select a directory to test from: " --print-query --bind "enter:accept"
-)
-
-if [[ $? -ne 0 ]]; then
-    echo "fzf was cancelled. Exiting script."
-    exit 1
-fi
-
-query=$(echo "$selection" | sed -n '1p')
-picked=$(echo "$selection" | sed -n '2p')
-dir_choice="${picked:-$query}"
-
-if [[ -z "$dir_choice" ]]; then
-    echo "Error: No directory selected or typed. Exiting."
-    exit 1
-fi
-
-QUESTIONS_DIR="$BASE_DIR/$dir_choice"
-
-echo "Using questions directory: '$QUESTIONS_DIR'"
-
-if [[ ! -d "$QUESTIONS_DIR" ]]; then
-    echo "Error: Directory '$QUESTIONS_DIR' does not exist."
-    exit 1
-fi
-
-# --- START TESTING ---
-
-find "$QUESTIONS_DIR" -type f > "$FILELIST"
-
-if [[ ! -s "$FILELIST" ]]; then
-    echo "Error: No questions found in '$QUESTIONS_DIR'."
-    exit 1
-fi
-
-while true; do
-    length=$(wc -l < "$FILELIST")
-
-    if (( length == 0 )); then
-        echo "All questions completed!"
-        break
-    fi
-
-    line=$(shuf -i 1-"$length" -n 1)
-    filepath=$(sed -n "${line}p" "$FILELIST" | xargs)
-
-    if [[ ! -f "$filepath" ]]; then
-        echo "Warning: file '$filepath' not found. Skipping."
-        sed -i "${line}d" "$FILELIST"
-        continue
-    fi
-
-    question_content=$(awk '/^###### Important points to remember ######/ {exit} {print}' "$filepath")
-
-    if [[ -z "$question_content" ]]; then
-        echo "Warning: file '$filepath' had no valid question part. Skipping."
-        sed -i "${line}d" "$FILELIST"
-        continue
-    fi
-
-    tmpfile=$(mktemp)
-    echo -e "${question_content}\n\n###### answer below #####\n" > "$tmpfile"
-
-    echo "Please write your answer. Save and quit when done."
-    nvim "$tmpfile" || {
-        echo "Warning: Neovim exited abnormally. Skipping question."
-        rm -f "$tmpfile"
-        sed -i "${line}d" "$FILELIST"
-        continue
-    }
-
-    user_input=$(<"$tmpfile")
-    rm -f "$tmpfile"
-
-    if [[ -z "$user_input" ]]; then
-        echo "Warning: Empty answer. Skipping."
-        sed -i "${line}d" "$FILELIST"
-        continue
-    fi
-
-absolute_path="$filepath"
-
-augmented_user_input="[Question absolute path: $absolute_path]
-
-$user_input"
-
-input="$prefix
-
-$augmented_user_input"
-
-    # Send to codex
-    codex -m gpt-4.1 "$input" || {
-        echo "Warning: Codex request failed. Continuing."
-    }
-
-    sed -i "${line}d" "$FILELIST"
+for arg in "$@"; do
+  case "$arg" in
+    dq|dynamic) TYPE="dynamic" ;;
+    static)     TYPE="static"  ;;
+    -m|--manual) MANUAL=true   ;;
+    *) echo "Usage: $0 [dq|static] [-m]" ; exit 1 ;;
+  esac
 done
+
+##############################################################################
+# 1.  CONSTANTS
+##############################################################################
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$SCRIPT_DIR/${TYPE/dynamic/dq}"
+PREFIX_FILE="$SCRIPT_DIR/prefix.md"
+
+[[ -f "$PREFIX_FILE" ]] || { echo "Missing $PREFIX_FILE"; exit 1; }
+PREFIX=$(<"$PREFIX_FILE")
+
+MODEL="gpt-4.1"
+EDITOR="nvim"
+
+# Dynamic-flow system prompts (tweak whenever you want)
+DRAFT_PROMPT=$'You are an exam-setter. Think aloud with ### lines, then output one JSON line:\n{"question":"…","points":["p1","p2","p3"]}'
+CONCISE_PROMPT=$'Rewrite the JSON so question ≤140 chars, trim each point ≤15 words. Return one JSON line only.'
+
+##############################################################################
+# 2.  PICK SUBFOLDER
+##############################################################################
+selection=$(
+  (find "$BASE_DIR" -mindepth 1 -maxdepth 1 -type d | sed "s|$BASE_DIR/||" || true) |
+  fzf --prompt="Select directory: " --print-query --bind "enter:accept"
+) || { echo "fzf cancelled"; exit 1; }
+
+dir_choice=$(sed -n '2p' <<<"$selection")
+dir_choice=${dir_choice:-$(sed -n '1p' <<<"$selection")}
+[[ -n "$dir_choice" ]] || { echo "No directory chosen"; exit 1; }
+
+QUEST_DIR="$BASE_DIR/$dir_choice"
+[[ -d "$QUEST_DIR" ]] || { echo "Folder $QUEST_DIR not found"; exit 1; }
+
+##############################################################################
+# 3.  BUILD FILE LIST
+##############################################################################
+mapfile -t FILES < <(find "$QUEST_DIR" -type f)
+(( ${#FILES[@]} > 0 )) || { echo "No files in $QUEST_DIR"; exit 1; }
+
+##############################################################################
+# 4.  MANUAL PICK?
+##############################################################################
+if $MANUAL; then
+  pick=$(printf '%s\n' "${FILES[@]}" | sed "s|$QUEST_DIR/||" |
+        fzf --prompt="Pick file: ")
+  [[ -n "$pick" ]] || { echo "No file chosen"; exit 1; }
+  FILES=("$QUEST_DIR/$pick")
+fi
+
+##############################################################################
+# 5.  HELPER – clean last JSON line
+##############################################################################
+json_last_line() {
+  awk 'NF{last=$0} END{
+        gsub(/^[`]+|[`]+$/,"",last);       # strip ```
+        gsub(/^json/,"",last);             # strip leading "json" if ```json
+        print last
+      }'
+}
+
+##############################################################################
+# 6.  MAIN LOOP
+##############################################################################
+while (( ${#FILES[@]} )); do
+  # pick random file
+  idx=$(( RANDOM % ${#FILES[@]} ))
+  filepath=${FILES[$idx]}
+  unset 'FILES[idx]'; FILES=("${FILES[@]}")
+
+  if [[ "$TYPE" == "static" ]]; then
+    ##########################################################################
+    # STATIC FLOW
+    ##########################################################################
+    question_content=$(awk '/^###### Important points to remember ######/ {exit} {print}' "$filepath")
+    [[ -n "$question_content" ]] || { echo "Bad file $filepath"; continue; }
+
+    tmp=$(mktemp)
+    printf '%s\n\n###### Answer below ######\n\n' "$question_content" >"$tmp"
+    $EDITOR "$tmp"
+    answer=$(<"$tmp"); rm -f "$tmp"
+    [[ -n "$answer" ]] || { echo "Empty answer; skipping"; continue; }
+
+    codex -m "$MODEL" "$PREFIX
+
+$answer" || echo "Codex failed"
+
+  else
+    ##########################################################################
+    # DYNAMIC FLOW
+    ##########################################################################
+    meta_prompt=$(<"$filepath")
+
+    # 1️⃣  Draft
+    draft_json=$(codex -m "$MODEL" -q "$DRAFT_PROMPT
+
+$meta_prompt" |
+                 jq -r '.content[] | select(.type=="output_text") | .text' |
+                 json_last_line)
+
+    # 2️⃣  Concise
+    concise_json=$(codex -m "$MODEL" -q "$CONCISE_PROMPT
+
+$draft_json" |
+                   jq -r '.content[] | select(.type=="output_text") | .text' |
+                   json_last_line)
+
+    # Validate JSON
+    if ! question=$(jq -er '.question' <<<"$concise_json" 2>/dev/null); then
+      echo "⚠️  Invalid JSON from model; skipping $(basename "$filepath")"
+      continue
+    fi
+    mapfile -t points < <(jq -r '.points[]' <<<"$concise_json" 2>/dev/null)
+
+    tmp=$(mktemp)
+    { printf '###### Question ######\n%s\n\n' "$question"
+      printf '###### Answer below ######\n\n'; } >"$tmp"
+
+    $EDITOR "$tmp"
+    answer=$(<"$tmp"); rm -f "$tmp"
+    [[ -n "$answer" ]] || { echo "Empty answer"; continue; }
+
+    codex -m "$MODEL" "$PREFIX
+
+###### Question ######
+$question
+
+###### Important points to remember ######
+$(printf -- '- %s\n' "${points[@]}")
+
+###### Answer below ######
+$answer" || echo "Codex failed"
+  fi
+
+  $MANUAL && break
+done
+
+echo "Done."

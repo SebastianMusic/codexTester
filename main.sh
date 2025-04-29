@@ -1,46 +1,55 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# main.sh – one-stop launcher
+#
+#   t   → test script           (./test.sh ...)
+#   g   → generator             (./gen.sh  ...)
+#   mg  → manual generator      (alias for “g -m”)
+#
+# Any extra flags after the mode are forwarded unchanged to the target script.
+# ------------------------------------------------------------------------------
 
-# --- SETTINGS ---
+set -euo pipefail
 
-# Define paths to your scripts
-SCRIPT_DIR="$(dirname "$0")"  # directory where this script lives
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 TEST_SCRIPT="$SCRIPT_DIR/test.sh"
-GEN_SCRIPT="$SCRIPT_DIR/gen.sh"
-MANUAL_GEN_SCRIPT="$SCRIPT_DIR/mangen.sh"
+GEN_SCRIPT="$SCRIPT_DIR/gen.sh"       # unified non-blocking generator
 
-# --- HANDLE ARGUMENTS ---
+usage() {
+  cat <<EOF
+Usage: $0 MODE [ARGS...]
 
-# Check if argument was provided
-if [[ $# -lt 1 ]]; then
-    echo "Usage: $0 [t | g | mg]"
-    echo "  t  - run test script"
-    echo "  g  - run generation script"
-    echo "  mg - run manual generation script"
-    exit 1
-fi
+MODE
+  t     run test script             (static by default)
+  g     run generator               (static by default)
+  mg    run generator with -m flag  (manual topic/filename)
+
+EXAMPLES
+  $0 t dq -m        # dynamic test, pick single file
+  $0 g dynamic      # create a dynamic meta-prompt
+EOF
+  exit 1
+}
+
+[[ $# -ge 1 ]] || usage
 
 mode="$1"
+shift              # leave the remaining args for the target script
 
 case "$mode" in
-    t)
-        echo "Running test script..."
-        bash "$TEST_SCRIPT"
-        ;;
-    g)
-        echo "Running generation script..."
-        bash "$GEN_SCRIPT"
-        ;;
-    mg)
-        echo "Running manual generation script..."
-        bash "$MANUAL_GEN_SCRIPT"
-        ;;
-    *)
-        echo "Unknown mode: $mode"
-        echo "Valid options are:"
-        echo "  t  - test"
-        echo "  g  - generate"
-        echo "  mg - manual generate"
-        exit 1
-        ;;
+  t)
+      bash "$TEST_SCRIPT" "$@"
+      ;;
+  g)
+      bash "$GEN_SCRIPT" "$@"
+      ;;
+  mg)
+      # ensure -m is included exactly once
+      bash "$GEN_SCRIPT" -m "$@"
+      ;;
+  *)
+      echo "Unknown mode: $mode"
+      usage
+      ;;
 esac

@@ -6,7 +6,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-BASE_DIR="$SCRIPT_DIR/q"
+# --- HANDLE ARGUMENT ---
+
+USE_DQ="${1:-}"
+
+if [[ "$USE_DQ" == "dq" ]]; then
+    BASE_DIR="$SCRIPT_DIR/dq"
+else
+    BASE_DIR="$SCRIPT_DIR/q"
+fi
+
 DEFAULT_EDITOR="nvim"
 
 mkdir -p "$BASE_DIR"
